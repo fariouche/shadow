@@ -48,10 +48,6 @@
 #endif				/* USE_PAM */
 #endif				/* ACCT_TOOLS_SETUID */
 #include <pwd.h>
-#ifdef WITH_SELINUX
-#include <selinux/selinux.h>
-#include <selinux/av_permissions.h>
-#endif
 #include "prototypes.h"
 #include "defines.h"
 #include "pwio.h"
@@ -70,6 +66,7 @@ const char *Prog;
 static bool
     dflg = false,		/* set last password change date */
     Eflg = false,		/* set account expiration date */
+    iflg = false,		/* set iso8601 date formatting */
     Iflg = false,		/* set password inactive after expiration */
     lflg = false,		/* show account aging information */
     mflg = false,		/* set minimum number of days before password change */
@@ -149,6 +146,7 @@ static /*@noreturn@*/void usage (int status)
 	(void) fputs (_("  -d, --lastday LAST_DAY        set date of last password change to LAST_DAY\n"), usageout);
 	(void) fputs (_("  -E, --expiredate EXPIRE_DATE  set account expiration date to EXPIRE_DATE\n"), usageout);
 	(void) fputs (_("  -h, --help                    display this help message and exit\n"), usageout);
+	(void) fputs (_("  -i, --iso8601                 use YYYY-MM-DD when printing dates\n"), usageout);
 	(void) fputs (_("  -I, --inactive INACTIVE       set password inactive after expiration\n"
 	                "                                to INACTIVE\n"), usageout);
 	(void) fputs (_("  -l, --list                    show account aging information\n"), usageout);
@@ -205,10 +203,10 @@ static int new_fields (void)
 		return 0;
 	}
 
-	if (-1 == lstchgdate) {
+	if (-1 == lstchgdate || lstchgdate > LONG_MAX / SCALE) {
 		strcpy (buf, "-1");
 	} else {
-		date_to_str (buf, sizeof buf, (time_t) lstchgdate * SCALE);
+		date_to_str (buf, sizeof buf, (time_t) (lstchgdate * SCALE));
 	}
 
 	change_field (buf, sizeof buf, _("Last Password Change (YYYY-MM-DD)"));
@@ -236,10 +234,10 @@ static int new_fields (void)
 		return 0;
 	}
 
-	if (-1 == expdate) {
+	if (-1 == expdate || LONG_MAX / SCALE < expdate) {
 		strcpy (buf, "-1");
 	} else {
-		date_to_str (buf, sizeof buf, (time_t) expdate * SCALE);
+		date_to_str (buf, sizeof buf, (time_t) (expdate * SCALE));
 	}
 
 	change_field (buf, sizeof buf,
@@ -262,12 +260,20 @@ static void print_date (time_t date)
 #ifdef HAVE_STRFTIME
 	struct tm *tp;
 	char buf[80];
+	char format[80];
+
+	if( iflg ) {
+		(void) snprintf (format, 80, "%%Y-%%m-%%d");
+	}
+	else {
+		(void) snprintf (format, 80, "%%b %%d, %%Y");
+	}
 
 	tp = gmtime (&date);
 	if (NULL == tp) {
 		(void) printf ("time_t: %lu\n", (unsigned long)date);
 	} else {
-		(void) strftime (buf, sizeof buf, "%b %d, %Y", tp);
+		(void) strftime (buf, sizeof buf, format, tp);
 		(void) puts (buf);
 	}
 #else
@@ -303,7 +309,7 @@ static void list_fields (void)
 	 * was last modified. The date is the number of days since 1/1/1970.
 	 */
 	(void) fputs (_("Last password change\t\t\t\t\t: "), stdout);
-	if (lstchgdate < 0) {
+	if (lstchgdate < 0 || lstchgdate > LONG_MAX / SCALE) {
 		(void) puts (_("never"));
 	} else if (lstchgdate == 0) {
 		(void) puts (_("password must be changed"));
@@ -321,7 +327,8 @@ static void list_fields (void)
 		(void) puts (_("password must be changed"));
 	} else if (   (lstchgdate < 0)
 	           || (maxdays >= (10000 * (DAY / SCALE)))
-	           || (maxdays < 0)) {
+	           || (maxdays < 0)
+	           || ((LONG_MAX - changed) / SCALE < maxdays)) {
 		(void) puts (_("never"));
 	} else {
 		expires = changed + maxdays * SCALE;
@@ -340,7 +347,9 @@ static void list_fields (void)
 	} else if (   (lstchgdate < 0)
 	           || (inactdays < 0)
 	           || (maxdays >= (10000 * (DAY / SCALE)))
-	           || (maxdays < 0)) {
+	           || (maxdays < 0)
+	           || (maxdays > LONG_MAX - inactdays)
+	           || ((LONG_MAX - changed) / SCALE < maxdays + inactdays)) {
 		(void) puts (_("never"));
 	} else {
 		expires = changed + (maxdays + inactdays) * SCALE;
@@ -352,7 +361,7 @@ static void list_fields (void)
 	 * password expiring or not.
 	 */
 	(void) fputs (_("Account expires\t\t\t\t\t\t: "), stdout);
-	if (expdate < 0) {
+	if (expdate < 0 || LONG_MAX / SCALE < expdate) {
 		(void) puts (_("never"));
 	} else {
 		expires = expdate * SCALE;
@@ -395,10 +404,11 @@ static void process_flags (int argc, char **argv)
 		{"maxdays",    required_argument, NULL, 'M'},
 		{"root",       required_argument, NULL, 'R'},
 		{"warndays",   required_argument, NULL, 'W'},
+		{"iso8601",    no_argument,       NULL, 'i'},
 		{NULL, 0, NULL, '\0'}
 	};
 
-	while ((c = getopt_long (argc, argv, "d:E:hI:lm:M:R:W:",
+	while ((c = getopt_long (argc, argv, "d:E:hiI:lm:M:R:W:",
 	                         long_options, NULL)) != -1) {
 		switch (c) {
 		case 'd':
@@ -424,6 +434,9 @@ static void process_flags (int argc, char **argv)
 		case 'h':
 			usage (E_SUCCESS);
 			/*@notreached@*/break;
+		case 'i':
+			iflg = true;
+			break;
 		case 'I':
 			Iflg = true;
 			if (   (getlong (optarg, &inactdays) == 0)
@@ -818,8 +831,8 @@ int main (int argc, char **argv)
 	rgid = getgid ();
 	amroot = (ruid == 0);
 #ifdef WITH_SELINUX
-	if (amroot && (is_selinux_enabled () > 0)) {
-		amroot = (selinux_check_passwd_access (PASSWD__ROOTOK) == 0);
+	if (amroot) {
+		amroot = (check_selinux_permit ("rootok") == 0);
 	}
 #endif
 

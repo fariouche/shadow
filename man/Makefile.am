@@ -41,7 +41,6 @@ man_MANS = \
 	man1/sg.1 \
 	man3/shadow.3 \
 	man5/shadow.5 \
-	man1/su.1 \
 	man5/suauth.5 \
 	man8/useradd.8 \
 	man8/userdel.8 \
@@ -53,6 +52,10 @@ man_nopam = \
 	man5/limits.5 \
 	man5/login.access.5 \
 	man5/porttime.5
+
+if WITH_SU
+man_MANS += man1/su.1
+endif
 
 if !USE_PAM
 man_MANS += $(man_nopam)
@@ -133,10 +136,12 @@ login_defs_v = \
 	FAKE_SHELL.xml \
 	FTMP_FILE.xml \
 	GID_MAX.xml \
+	HOME_MODE.xml \
 	HUSHLOGIN_FILE.xml \
 	ISSUE_FILE.xml \
 	KILLCHAR.xml \
 	LASTLOG_ENAB.xml \
+	LASTLOG_UID_MAX.xml \
 	LOGIN_RETRIES.xml \
 	LOGIN_STRING.xml \
 	LOGIN_TIMEOUT.xml \
@@ -148,6 +153,7 @@ login_defs_v = \
 	MD5_CRYPT_ENAB.xml \
 	MOTD_FILE.xml \
 	NOLOGINS_FILE.xml \
+	NONEXISTENT.xml \
 	OBSCURE_CHECKS_ENAB.xml \
 	PASS_ALWAYS_WARN.xml \
 	PASS_CHANGE_TRIES.xml \

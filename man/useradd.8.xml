@@ -32,6 +32,8 @@
   "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd" [
 <!ENTITY CREATE_HOME           SYSTEM "login.defs.d/CREATE_HOME.xml">
 <!ENTITY GID_MAX               SYSTEM "login.defs.d/GID_MAX.xml">
+<!ENTITY HOME_MODE             SYSTEM "login.defs.d/HOME_MODE.xml">
+<!ENTITY LASTLOG_UID_MAX       SYSTEM "login.defs.d/LASTLOG_UID_MAX.xml">
 <!ENTITY MAIL_DIR              SYSTEM "login.defs.d/MAIL_DIR.xml">
 <!ENTITY MAX_MEMBERS_PER_GROUP SYSTEM "login.defs.d/MAX_MEMBERS_PER_GROUP.xml">
 <!ENTITY PASS_MAX_DAYS         SYSTEM "login.defs.d/PASS_MAX_DAYS.xml">
@@ -127,6 +129,16 @@
     <variablelist remap='IP'>
       <varlistentry>
 	<term>
+	  <option>--badname</option>&nbsp;
+	</term>
+	<listitem>
+	  <para>
+        Allow names that do not conform to standards.
+	  </para>
+	</listitem>
+      </varlistentry>
+      <varlistentry>
+	<term>
 	  <option>-b</option>, <option>--base-dir</option>&nbsp;<replaceable>BASE_DIR</replaceable>
 	</term>
 	<listitem>
@@ -169,8 +181,10 @@
 	    login directory. The default is to append the
 	    <replaceable>LOGIN</replaceable> name to
 	    <replaceable>BASE_DIR</replaceable> and use that as the login
-	    directory name. The directory <replaceable>HOME_DIR</replaceable>
-	    does not have to exist but will not be created if it is missing.
+	    directory name.  If the directory
+	    <replaceable>HOME_DIR</replaceable> does not exist, then it
+	    will be created unless the <option>-M</option> option is
+	    specified.
 	  </para>
 	</listitem>
       </varlistentry>
@@ -670,6 +684,8 @@
     <variablelist>
       &CREATE_HOME;
       &GID_MAX; <!-- documents also GID_MIN -->
+      &HOME_MODE;
+      &LASTLOG_UID_MAX;
       &MAIL_DIR;
       &MAX_MEMBERS_PER_GROUP;
       &PASS_MAX_DAYS;
@@ -722,6 +738,12 @@
 	</listitem>
       </varlistentry>
       <varlistentry>
+	<term><filename>/etc/shadow-maint/useradd-pre.d/*</filename>, <filename>/etc/shadow-maint/useradd-post.d/*</filename></term>
+	<listitem>
+	  <para>Run-part files to execute during user addition. The environment variable <command>ACTION</command> will be populated with useradd and <command>SUBJECT</command> with the <command>username</command>. <filename>useradd-pre.d</filename> will be executed prior to any user addition. <filename>useradd-post.d</filename> will execute after user addition. If a script exits non-zero then execution will terminate.</para>
+	</listitem>
+      </varlistentry>
+  <varlistentry>
 	<term><filename>/etc/skel/</filename></term>
 	<listitem>
 	  <para>Directory containing default files.</para>

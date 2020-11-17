@@ -49,6 +49,7 @@
 #include "defines.h"
 #include "groupio.h"
 #include "nscd.h"
+#include "sssd.h"
 #include "prototypes.h"
 #ifdef	SHADOWGRP
 #include "sgroupio.h"
@@ -322,6 +323,7 @@ static void process_flags (int argc, char **argv)
 	int c;
 	static struct option long_options[] = {
 		{"help", no_argument,       NULL, 'h'},
+		{"force", no_argument,      NULL, 'f'},
 		{"root", required_argument, NULL, 'R'},
 		{"prefix", required_argument, NULL, 'P'},
 		{NULL, 0, NULL, '\0'}
@@ -492,6 +494,7 @@ int main (int argc, char **argv)
 	close_files ();
 
 	nscd_flush_cache ("group");
+	sssd_flush_cache (SSSD_DB_GROUP);
 
 	return E_SUCCESS;
 }

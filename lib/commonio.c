@@ -45,6 +45,7 @@
 #include <stdio.h>
 #include <signal.h>
 #include "nscd.h"
+#include "sssd.h"
 #ifdef WITH_TCB
 #include <tcb.h>
 #endif				/* WITH_TCB */
@@ -140,7 +141,7 @@ static int do_lock_file (const char *file, const char *lock, bool log)
 	int retval;
 	char buf[32];
 
-	fd = open (file, O_CREAT | O_EXCL | O_WRONLY, 0600);
+	fd = open (file, O_CREAT | O_TRUNC | O_WRONLY, 0600);
 	if (-1 == fd) {
 		if (log) {
 			(void) fprintf (stderr,
@@ -156,7 +157,17 @@ static int do_lock_file (const char *file, const char *lock, bool log)
 	if (write (fd, buf, (size_t) len) != len) {
 		if (log) {
 			(void) fprintf (stderr,
-			                "%s: %s: %s\n",
+			                "%s: %s file write error: %s\n",
+			                Prog, file, strerror (errno));
+		}
+		(void) close (fd);
+		unlink (file);
+		return 0;
+	}
+	if (fdatasync (fd) == -1) {
+		if (log) {
+			(void) fprintf (stderr,
+			                "%s: %s file sync error: %s\n",
 			                Prog, file, strerror (errno));
 		}
 		(void) close (fd);
@@ -363,6 +374,7 @@ static void free_linked_list (struct commonio_db *db)
 int commonio_setname (struct commonio_db *db, const char *name)
 {
 	snprintf (db->filename, sizeof (db->filename), "%s", name);
+	db->setname = true;
 	return 1;
 }
 
@@ -379,7 +391,7 @@ int commonio_lock_nowait (struct commonio_db *db, bool log)
 	char* lock = NULL;
 	size_t lock_file_len;
 	size_t file_len;
-	int err;
+	int err = 0;
 
 	if (db->locked) {
 		return 1;
@@ -388,12 +400,10 @@ int commonio_lock_nowait (struct commonio_db *db, bool log)
 	lock_file_len = strlen(db->filename) + 6; /* sizeof ".lock" */
 	file = (char*)malloc(file_len);
 	if(file == NULL) {
-		err = ENOMEM;
 		goto cleanup_ENOMEM;
 	}
 	lock = (char*)malloc(lock_file_len);
 	if(lock == NULL) {
-		err = ENOMEM;
 		goto cleanup_ENOMEM;
 	}
 	snprintf (file, file_len, "%s.%lu",
@@ -449,36 +459,39 @@ int commonio_lock (struct commonio_db *db)
 
 	if (strncmp(db->filename, "/etc/", 5))
 		return _commonio_lock (db);
+
 	/*
-	 * only if the system libc has a real lckpwdf() - the one from
+	 * Only if the system libc has a real lckpwdf() - the one from
 	 * lockpw.c calls us and would cause infinite recursion!
+	 * It is also not used with the prefix option.
 	 */
-
-	/*
-	 * Call lckpwdf() on the first lock.
-	 * If it succeeds, call *_lock() only once
-	 * (no retries, it should always succeed).
-	 */
-	if (0 == lock_count) {
-		if (lckpwdf () == -1) {
-			if (geteuid () != 0) {
-				(void) fprintf (stderr,
-				                "%s: Permission denied.\n",
-				                Prog);
+	if (!db->setname) {
+		/*
+		 * Call lckpwdf() on the first lock.
+		 * If it succeeds, call *_lock() only once
+		 * (no retries, it should always succeed).
+		 */
+		if (0 == lock_count) {
+			if (lckpwdf () == -1) {
+				if (geteuid () != 0) {
+					(void) fprintf (stderr,
+					                "%s: Permission denied.\n",
+					                Prog);
+				}
+				return 0;	/* failure */
 			}
-			return 0;	/* failure */
 		}
-	}
 
-	if (commonio_lock_nowait (db, true) != 0) {
-		return 1;	/* success */
-	}
+		if (commonio_lock_nowait (db, true) != 0) {
+			return 1;	/* success */
+		}
 
-	ulckpwdf ();
-	return 0;		/* failure */
+		ulckpwdf ();
+		return 0;		/* failure */
+    	}
 #else				/* !HAVE_LCKPWDF */
 	return _commonio_lock (db);
-#endif				/* !HAVE_LCKPWDF */
+#endif                          /* !HAVE_LCKPWDF */
 }
 
 static void dec_lock_count (void)
@@ -491,6 +504,7 @@ static void dec_lock_count (void)
 			if (nscd_need_reload) {
 				nscd_flush_cache ("passwd");
 				nscd_flush_cache ("group");
+				sssd_flush_cache (SSSD_DB_PASSWD | SSSD_DB_GROUP);
 				nscd_need_reload = false;
 			}
 #ifdef HAVE_LCKPWDF
@@ -931,7 +945,6 @@ static int write_all (const struct commonio_db *db)
 
 
 int commonio_close (struct commonio_db *db)
-	/*@requires notnull db->fp@*/
 {
 	char buf[1024];
 	int errors = 0;
@@ -944,8 +957,10 @@ int commonio_close (struct commonio_db *db)
 	db->isopen = false;
 
 	if (!db->changed || db->readonly) {
-		(void) fclose (db->fp);
-		db->fp = NULL;
+		if (NULL != db->fp) {
+			(void) fclose (db->fp);
+			db->fp = NULL;
+		}
 		goto success;
 	}
 

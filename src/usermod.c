@@ -57,6 +57,7 @@
 #include "getdef.h"
 #include "groupio.h"
 #include "nscd.h"
+#include "sssd.h"
 #include "prototypes.h"
 #include "pwauth.h"
 #include "pwio.h"
@@ -182,6 +183,7 @@ static bool sub_gid_locked = false;
 static void date_to_str (/*@unique@*//*@out@*/char *buf, size_t maxsize,
                          long int date);
 static int get_groups (char *);
+static struct group * get_local_group (char * grp_name);
 static /*@noreturn@*/void usage (int status);
 static void new_pwent (struct passwd *);
 static void new_spent (struct spwd *);
@@ -195,7 +197,9 @@ static void grp_update (void);
 
 static void process_flags (int, char **);
 static void close_files (void);
+static void close_group_files (void);
 static void open_files (void);
+static void open_group_files (void);
 static void usr_update (void);
 static void move_home (void);
 static void update_lastlog (void);
@@ -204,6 +208,8 @@ static void update_faillog (void);
 #ifndef NO_MOVE_MAILBOX
 static void move_mailbox (void);
 #endif
+
+extern int allow_bad_names;
 
 static void date_to_str (/*@unique@*//*@out@*/char *buf, size_t maxsize,
                          long int date)
@@ -251,6 +257,11 @@ static int get_groups (char *list)
 	}
 
 	/*
+	 * Open the group files
+	 */
+	open_group_files ();
+
+	/*
 	 * So long as there is some data to be converted, strip off each
 	 * name and look it up. A mix of numerical and string values for
 	 * group identifiers is permitted.
@@ -269,7 +280,7 @@ static int get_groups (char *list)
 		 * Names starting with digits are treated as numerical GID
 		 * values, otherwise the string is looked up as is.
 		 */
-		grp = prefix_getgr_nam_gid (list);
+		grp = get_local_group (list);
 
 		/*
 		 * There must be a match, either by GID value or by
@@ -319,6 +330,8 @@ static int get_groups (char *list)
 		gr_free ((struct group *)grp);
 	} while (NULL != list);
 
+	close_group_files ();
+
 	user_groups[ngroups] = (char *) 0;
 
 	/*
@@ -329,6 +342,44 @@ static int get_groups (char *list)
 	}
 
 	return 0;
+}
+
+/*
+ * get_local_group - checks if a given group name exists locally
+ *
+ *	get_local_group() checks if a given group name exists locally.
+ *	If the name exists the group information is returned, otherwise NULL is
+ *	returned.
+ */
+static struct group * get_local_group(char * grp_name)
+{
+	const struct group *grp;
+	struct group *result_grp = NULL;
+	long long int gid;
+	char *endptr;
+
+	gid = strtoll (grp_name, &endptr, 10);
+	if (   ('\0' != *grp_name)
+		&& ('\0' == *endptr)
+		&& (ERANGE != errno)
+		&& (gid == (gid_t)gid)) {
+		grp = gr_locate_gid ((gid_t) gid);
+	}
+	else {
+		grp = gr_locate(grp_name);
+	}
+
+	if (grp != NULL) {
+		result_grp = __gr_dup (grp);
+		if (NULL == result_grp) {
+			fprintf (stderr,
+					_("%s: Out of memory. Cannot find group '%s'.\n"),
+					Prog, grp_name);
+			fail_exit (E_GRP_UPDATE);
+		}
+	}
+
+	return result_grp;
 }
 
 #ifdef ENABLE_SUBIDS
@@ -407,6 +458,7 @@ static /*@noreturn@*/void usage (int status)
 	                  "\n"
 	                  "Options:\n"),
 	                Prog);
+	(void) fputs (_("  -b, --badnames                allow bad names\n"), usageout);
 	(void) fputs (_("  -c, --comment COMMENT         new value of the GECOS field\n"), usageout);
 	(void) fputs (_("  -d, --home HOME_DIR           new home directory for the user account\n"), usageout);
 	(void) fputs (_("  -e, --expiredate EXPIRE_DATE  set account expiration date to EXPIRE_DATE\n"), usageout);
@@ -990,6 +1042,7 @@ static void process_flags (int argc, char **argv)
 		int c;
 		static struct option long_options[] = {
 			{"append",       no_argument,       NULL, 'a'},
+			{"badnames",     no_argument,       NULL, 'b'},
 			{"comment",      required_argument, NULL, 'c'},
 			{"home",         required_argument, NULL, 'd'},
 			{"expiredate",   required_argument, NULL, 'e'},
@@ -1019,7 +1072,7 @@ static void process_flags (int argc, char **argv)
 			{NULL, 0, NULL, '\0'}
 		};
 		while ((c = getopt_long (argc, argv,
-		                         "ac:d:e:f:g:G:hl:Lmop:R:s:u:UP:"
+		                         "abc:d:e:f:g:G:hl:Lmop:R:s:u:UP:"
 #ifdef ENABLE_SUBIDS
 		                         "v:w:V:W:"
 #endif				/* ENABLE_SUBIDS */
@@ -1030,6 +1083,9 @@ static void process_flags (int argc, char **argv)
 			switch (c) {
 			case 'a':
 				aflg = true;
+				break;
+			case 'b':
+				allow_bad_names = true;
 				break;
 			case 'c':
 				if (!VALID (optarg)) {
@@ -1367,7 +1423,7 @@ static void process_flags (int argc, char **argv)
 	      || Zflg
 #endif				/* WITH_SELINUX */
 	)) {
-		fprintf (stderr, _("%s: no changes\n"), Prog);
+		fprintf (stdout, _("%s: no changes\n"), Prog);
 		exit (E_SUCCESS);
 	}
 
@@ -1439,50 +1495,7 @@ static void close_files (void)
 	}
 
 	if (Gflg || lflg) {
-		if (gr_close () == 0) {
-			fprintf (stderr,
-			         _("%s: failure while writing changes to %s\n"),
-			         Prog, gr_dbname ());
-			SYSLOG ((LOG_ERR,
-			         "failure while writing changes to %s",
-			         gr_dbname ()));
-			fail_exit (E_GRP_UPDATE);
-		}
-#ifdef SHADOWGRP
-		if (is_shadow_grp) {
-			if (sgr_close () == 0) {
-				fprintf (stderr,
-				         _("%s: failure while writing changes to %s\n"),
-				         Prog, sgr_dbname ());
-				SYSLOG ((LOG_ERR,
-				         "failure while writing changes to %s",
-				         sgr_dbname ()));
-				fail_exit (E_GRP_UPDATE);
-			}
-		}
-#endif
-#ifdef SHADOWGRP
-		if (is_shadow_grp) {
-			if (sgr_unlock () == 0) {
-				fprintf (stderr,
-				         _("%s: failed to unlock %s\n"),
-				         Prog, sgr_dbname ());
-				SYSLOG ((LOG_ERR,
-				         "failed to unlock %s",
-				         sgr_dbname ()));
-				/* continue */
-			}
-		}
-#endif
-		if (gr_unlock () == 0) {
-			fprintf (stderr,
-			         _("%s: failed to unlock %s\n"),
-			         Prog, gr_dbname ());
-			SYSLOG ((LOG_ERR,
-			         "failed to unlock %s",
-			         gr_dbname ()));
-			/* continue */
-		}
+		close_group_files ();
 	}
 
 	if (is_shadow_pwd) {
@@ -1552,6 +1565,60 @@ static void close_files (void)
 }
 
 /*
+ * close_group_files - close all of the files that were opened
+ *
+ *	close_group_files() closes all of the files that were opened related
+ *  with groups. This causes any modified entries to be written out.
+ */
+static void close_group_files (void)
+{
+	if (gr_close () == 0) {
+		fprintf (stderr,
+					_("%s: failure while writing changes to %s\n"),
+					Prog, gr_dbname ());
+		SYSLOG ((LOG_ERR,
+					"failure while writing changes to %s",
+					gr_dbname ()));
+		fail_exit (E_GRP_UPDATE);
+	}
+#ifdef SHADOWGRP
+	if (is_shadow_grp) {
+		if (sgr_close () == 0) {
+			fprintf (stderr,
+						_("%s: failure while writing changes to %s\n"),
+						Prog, sgr_dbname ());
+			SYSLOG ((LOG_ERR,
+						"failure while writing changes to %s",
+						sgr_dbname ()));
+			fail_exit (E_GRP_UPDATE);
+		}
+	}
+#endif
+#ifdef SHADOWGRP
+	if (is_shadow_grp) {
+		if (sgr_unlock () == 0) {
+			fprintf (stderr,
+						_("%s: failed to unlock %s\n"),
+						Prog, sgr_dbname ());
+			SYSLOG ((LOG_ERR,
+						"failed to unlock %s",
+						sgr_dbname ()));
+			/* continue */
+		}
+	}
+#endif
+	if (gr_unlock () == 0) {
+		fprintf (stderr,
+					_("%s: failed to unlock %s\n"),
+					Prog, gr_dbname ());
+		SYSLOG ((LOG_ERR,
+					"failed to unlock %s",
+					gr_dbname ()));
+		/* continue */
+	}
+}
+
+/*
  * open_files - lock and open the password files
  *
  *	open_files() opens the two password files.
@@ -1586,38 +1653,7 @@ static void open_files (void)
 	}
 
 	if (Gflg || lflg) {
-		/*
-		 * Lock and open the group file. This will load all of the
-		 * group entries.
-		 */
-		if (gr_lock () == 0) {
-			fprintf (stderr,
-			         _("%s: cannot lock %s; try again later.\n"),
-			         Prog, gr_dbname ());
-			fail_exit (E_GRP_UPDATE);
-		}
-		gr_locked = true;
-		if (gr_open (O_CREAT | O_RDWR) == 0) {
-			fprintf (stderr,
-			         _("%s: cannot open %s\n"),
-			         Prog, gr_dbname ());
-			fail_exit (E_GRP_UPDATE);
-		}
-#ifdef SHADOWGRP
-		if (is_shadow_grp && (sgr_lock () == 0)) {
-			fprintf (stderr,
-			         _("%s: cannot lock %s; try again later.\n"),
-			         Prog, sgr_dbname ());
-			fail_exit (E_GRP_UPDATE);
-		}
-		sgr_locked = true;
-		if (is_shadow_grp && (sgr_open (O_CREAT | O_RDWR) == 0)) {
-			fprintf (stderr,
-			         _("%s: cannot open %s\n"),
-			         Prog, sgr_dbname ());
-			fail_exit (E_GRP_UPDATE);
-		}
-#endif
+		open_group_files ();
 	}
 #ifdef ENABLE_SUBIDS
 	if (vflg || Vflg) {
@@ -1651,6 +1687,44 @@ static void open_files (void)
 		}
 	}
 #endif				/* ENABLE_SUBIDS */
+}
+
+/*
+ * open_group_files - lock and open the group files
+ *
+ *	open_group_files() loads all of the group entries.
+ */
+static void open_group_files (void)
+{
+	if (gr_lock () == 0) {
+		fprintf (stderr,
+					_("%s: cannot lock %s; try again later.\n"),
+					Prog, gr_dbname ());
+		fail_exit (E_GRP_UPDATE);
+	}
+	gr_locked = true;
+	if (gr_open (O_CREAT | O_RDWR) == 0) {
+		fprintf (stderr,
+					_("%s: cannot open %s\n"),
+					Prog, gr_dbname ());
+		fail_exit (E_GRP_UPDATE);
+	}
+
+#ifdef SHADOWGRP
+	if (is_shadow_grp && (sgr_lock () == 0)) {
+		fprintf (stderr,
+					_("%s: cannot lock %s; try again later.\n"),
+					Prog, sgr_dbname ());
+		fail_exit (E_GRP_UPDATE);
+	}
+	sgr_locked = true;
+	if (is_shadow_grp && (sgr_open (O_CREAT | O_RDWR) == 0)) {
+		fprintf (stderr,
+					_("%s: cannot open %s\n"),
+					Prog, sgr_dbname ());
+		fail_exit (E_GRP_UPDATE);
+	}
+#endif
 }
 
 /*
@@ -1818,6 +1892,15 @@ static void move_home (void)
 			return;
 		} else {
 			if (EXDEV == errno) {
+#ifdef WITH_BTRFS
+				if (btrfs_is_subvolume (prefix_user_home) > 0) {
+					fprintf (stderr,
+					        _("%s: error: cannot move subvolume from %s to %s - different device\n"),
+					        Prog, prefix_user_home, prefix_user_newhome);
+					fail_exit (E_HOMEDIR);
+				}
+#endif
+
 				if (copy_tree (prefix_user_home, prefix_user_newhome, true,
 				               true,
 				               user_id,
@@ -1863,8 +1946,15 @@ static void update_lastlog (void)
 	int fd;
 	off_t off_uid = (off_t) user_id * sizeof ll;
 	off_t off_newuid = (off_t) user_newid * sizeof ll;
+	uid_t max_uid;
 
 	if (access (LASTLOG_FILE, F_OK) != 0) {
+		return;
+	}
+
+	max_uid = (uid_t) getdef_ulong ("LASTLOG_UID_MAX", 0xFFFFFFFFUL);
+	if (user_newid > max_uid) {
+		/* do not touch lastlog for large uids */
 		return;
 	}
 
@@ -2255,6 +2345,7 @@ int main (int argc, char **argv)
 
 	nscd_flush_cache ("passwd");
 	nscd_flush_cache ("group");
+	sssd_flush_cache (SSSD_DB_PASSWD | SSSD_DB_GROUP);
 
 #ifdef WITH_SELINUX
 	if (Zflg) {
@@ -2304,7 +2395,10 @@ int main (int argc, char **argv)
 	}
 
 	if (!mflg && (uflg || gflg)) {
-		if (access (dflg ? prefix_user_newhome : prefix_user_home, F_OK) == 0) {
+		struct stat sb;
+
+		if (stat (dflg ? prefix_user_newhome : prefix_user_home, &sb) == 0 &&
+			((uflg && sb.st_uid == user_newid) || sb.st_uid == user_id)) {
 			/*
 			 * Change the UID on all of the files owned by
 			 * `user_id' to `user_newid' in the user's home

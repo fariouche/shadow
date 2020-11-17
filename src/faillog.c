@@ -163,6 +163,10 @@ static void print_one (/*@null@*/const struct passwd *pw, bool force)
 	}
 
 	tm = localtime (&fl.fail_time);
+	if (!tm) {
+		fprintf (stderr, "Cannot read time from faillog.\n");
+		return;
+	}
 #ifdef HAVE_STRFTIME
 	strftime (ptime, sizeof (ptime), "%D %H:%M:%S %z", tm);
 	cp = ptime;
@@ -561,7 +565,7 @@ static void set_locktime (long locktime)
 int main (int argc, char **argv)
 {
 	long fail_locktime;
-	short fail_max;
+	short fail_max = 0; // initialize to silence compiler warning
 	long days;
 
 	/*

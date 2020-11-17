@@ -74,10 +74,13 @@ extern const char* process_prefix_flag (const char* short_opt, int argc, char **
 	 * Parse the command line options.
 	 */
 	int i;
-	const char *prefix = NULL;
+	const char *prefix = NULL, *val;
 
 	for (i = 0; i < argc; i++) {
+		val = NULL;
 		if (   (strcmp (argv[i], "--prefix") == 0)
+		    || ((strncmp (argv[i], "--prefix=", 9) == 0)
+			&& (val = argv[i] + 9))
 		    || (strcmp (argv[i], short_opt) == 0)) {
 			if (NULL != prefix) {
 				fprintf (stderr,
@@ -86,17 +89,20 @@ extern const char* process_prefix_flag (const char* short_opt, int argc, char **
 				exit (E_BAD_ARG);
 			}
 
-			if (i + 1 == argc) {
+			if (val) {
+				prefix = val;
+			} else if (i + 1 == argc) {
 				fprintf (stderr,
 				         _("%s: option '%s' requires an argument\n"),
 				         Prog, argv[i]);
 				exit (E_BAD_ARG);
+			} else {
+				prefix = argv[++ i];
 			}
-			prefix = argv[i + 1];
 		}
 	}
 
-	
+
 
 	if (prefix != NULL) {
 		if ( prefix[0] == '\0' || !strcmp(prefix, "/"))
@@ -113,7 +119,7 @@ extern const char* process_prefix_flag (const char* short_opt, int argc, char **
 		group_db_file = xmalloc(len);
 		snprintf(group_db_file, len, "%s/%s", prefix, GROUP_FILE);
 		gr_setdbname(group_db_file);
-	
+
 #ifdef  SHADOWGRP
 		len = strlen(prefix) + strlen(SGROUP_FILE) + 2;
 		sgroup_db_file = xmalloc(len);
@@ -128,8 +134,8 @@ extern const char* process_prefix_flag (const char* short_opt, int argc, char **
 		spw_db_file = xmalloc(len);
 		snprintf(spw_db_file, len, "%s/%s", prefix, SHADOW_FILE);
 		spw_setdbname(spw_db_file);
-		
 
+#ifdef ENABLE_SUBIDS
 		len = strlen(prefix) + strlen("/etc/subuid") + 2;
 		suid_db_file = xmalloc(len);
 		snprintf(suid_db_file, len, "%s/%s", prefix, "/etc/subuid");
@@ -139,12 +145,17 @@ extern const char* process_prefix_flag (const char* short_opt, int argc, char **
 		sgid_db_file = xmalloc(len);
 		snprintf(sgid_db_file, len, "%s/%s", prefix, "/etc/subgid");
 		sub_gid_setdbname(sgid_db_file);
+#endif
 
+#ifdef USE_ECONF
+		setdef_config_file(prefix);
+#else
 		len = strlen(prefix) + strlen("/etc/login.defs") + 2;
 		def_conf_file = xmalloc(len);
 		snprintf(def_conf_file, len, "%s/%s", prefix, "/etc/login.defs");
 		setdef_config_file(def_conf_file);
-	}	
+#endif
+	}
 
 	if (prefix == NULL)
 		return "";
@@ -161,14 +172,14 @@ extern struct group *prefix_getgrnam(const char *name)
 		fg = fopen(group_db_file, "rt");
 		if(!fg)
 			return NULL;
-		while(grp = fgetgrent(fg)) {
+		while((grp = fgetgrent(fg)) != NULL) {
 			if(!strcmp(name, grp->gr_name))
 				break;
 		}
 		fclose(fg);
 		return grp;
 	}
-	
+
 	return getgrnam(name);
 }
 
@@ -181,7 +192,7 @@ extern struct group *prefix_getgrgid(gid_t gid)
 		fg = fopen(group_db_file, "rt");
 		if(!fg)
 			return NULL;
-		while(grp = fgetgrent(fg)) {
+		while((grp = fgetgrent(fg)) != NULL) {
 			if(gid == grp->gr_gid)
 				break;
 		}
@@ -201,7 +212,7 @@ extern struct passwd *prefix_getpwuid(uid_t uid)
 		fg = fopen(passwd_db_file, "rt");
 		if(!fg)
 			return NULL;
-		while(pwd = fgetpwent(fg)) {
+		while((pwd = fgetpwent(fg)) != NULL) {
 			if(uid == pwd->pw_uid)
 				break;
 		}
@@ -221,7 +232,7 @@ extern struct passwd *prefix_getpwnam(const char* name)
 		fg = fopen(passwd_db_file, "rt");
 		if(!fg)
 			return NULL;
-		while(pwd = fgetpwent(fg)) {
+		while((pwd = fgetpwent(fg)) != NULL) {
 			if(!strcmp(name, pwd->pw_name))
 				break;
 		}
@@ -241,7 +252,7 @@ extern struct spwd *prefix_getspnam(const char* name)
 		fg = fopen(spw_db_file, "rt");
 		if(!fg)
 			return NULL;
-		while(sp = fgetspent(fg)) {
+		while((sp = fgetspent(fg)) != NULL) {
 			if(!strcmp(name, sp->sp_namp))
 				break;
 		}
@@ -261,7 +272,7 @@ extern void prefix_setpwent()
 	}
 	if (fp_pwent)
 		fclose (fp_pwent);
-	
+
 	fp_pwent = fopen(passwd_db_file, "rt");
 	if(!fp_pwent)
 		return;
@@ -292,7 +303,7 @@ extern void prefix_setgrent()
 	}
 	if (fp_grent)
 		fclose (fp_grent);
-	
+
 	fp_grent = fopen(group_db_file, "rt");
 	if(!fp_grent)
 		return;

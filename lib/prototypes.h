@@ -72,6 +72,14 @@ extern int expire (const struct passwd *, /*@null@*/const struct spwd *);
 /* isexpired.c */
 extern int isexpired (const struct passwd *, /*@null@*/const struct spwd *);
 
+/* btrfs.c */
+#ifdef WITH_BTRFS
+extern int btrfs_create_subvolume(const char *path);
+extern int btrfs_remove_subvolume(const char *path);
+extern int btrfs_is_subvolume(const char *path);
+extern int is_btrfs(const char *path);
+#endif
+
 /* basename() renamed to Basename() to avoid libc name space confusion */
 /* basename.c */
 extern /*@observer@*/const char *Basename (const char *str);
@@ -153,12 +161,10 @@ extern int find_new_uid (bool sys_user,
 
 #ifdef ENABLE_SUBIDS
 /* find_new_sub_gids.c */
-extern int find_new_sub_gids (const char *owner,
-			      gid_t *range_start, unsigned long *range_count);
+extern int find_new_sub_gids (gid_t *range_start, unsigned long *range_count);
 
 /* find_new_sub_uids.c */
-extern int find_new_sub_uids (const char *owner,
-			      uid_t *range_start, unsigned long *range_count);
+extern int find_new_sub_uids (uid_t *range_start, unsigned long *range_count);
 #endif				/* ENABLE_SUBIDS */
 
 
@@ -200,7 +206,9 @@ extern void __gr_set_changed (void);
 
 /* groupmem.c */
 extern /*@null@*/ /*@only@*/struct group *__gr_dup (const struct group *grent);
+extern void gr_free_members (struct group *grent);
 extern void gr_free (/*@out@*/ /*@only@*/struct group *grent);
+extern bool gr_append_member (struct group *grp, char *member);
 
 /* hushed.c */
 extern bool hushed (const char *username);
@@ -328,6 +336,7 @@ extern /*@observer@*/const char *crypt_make_salt (/*@null@*//*@observer@*/const 
 #ifdef WITH_SELINUX
 extern int set_selinux_file_context (const char *dst_name);
 extern int reset_selinux_file_context (void);
+extern int check_selinux_permit (const char *perm_name);
 #endif
 
 /* semanage.c */
@@ -416,17 +425,19 @@ extern int set_filesize_limit (int blocks);
 extern int user_busy (const char *name, uid_t uid);
 
 /* utmp.c */
+#ifndef USE_UTMPX
 extern /*@null@*/struct utmp *get_current_utmp (void);
 extern struct utmp *prepare_utmp (const char *name,
                                   const char *line,
                                   const char *host,
                                   /*@null@*/const struct utmp *ut);
 extern int setutmp (struct utmp *ut);
-#ifdef USE_UTMPX
+#else
+extern /*@null@*/struct utmpx *get_current_utmp (void);
 extern struct utmpx *prepare_utmpx (const char *name,
                                     const char *line,
                                     const char *host,
-                                    /*@null@*/const struct utmp *ut);
+                                    /*@null@*/const struct utmpx *ut);
 extern int setutmpx (struct utmpx *utx);
 #endif				/* USE_UTMPX */
 
@@ -437,6 +448,7 @@ extern bool valid (const char *, const struct passwd *);
 extern /*@maynotreturn@*/ /*@only@*//*@out@*//*@notnull@*/char *xmalloc (size_t size)
   /*@ensures MaxSet(result) == (size - 1); @*/;
 extern /*@maynotreturn@*/ /*@only@*//*@notnull@*/char *xstrdup (const char *);
+extern void xfree(void *ap);
 
 /* xgetpwnam.c */
 extern /*@null@*/ /*@only@*/struct passwd *xgetpwnam (const char *);

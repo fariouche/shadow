@@ -40,13 +40,10 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <getopt.h>
-#ifdef WITH_SELINUX
-#include <selinux/selinux.h>
-#include <selinux/av_permissions.h>
-#endif
 #include "defines.h"
 #include "getdef.h"
 #include "nscd.h"
+#include "sssd.h"
 #ifdef USE_PAM
 #include "pam_defs.h"
 #endif
@@ -64,7 +61,7 @@ static char fullnm[BUFSIZ];
 static char roomno[BUFSIZ];
 static char workph[BUFSIZ];
 static char homeph[BUFSIZ];
-static char slop[BUFSIZ];
+static char slop[BUFSIZ + 1 + 80];
 static bool amroot;
 /* Flags */
 static bool fflg = false;		/* -f - set full name                */
@@ -314,6 +311,11 @@ static void process_flags (int argc, char **argv)
 				exit (E_NOPERM);
 			}
 			oflg = true;
+			if (strlen (optarg) > (unsigned int) 80) {
+				fprintf (stderr,
+				         _("%s: fields too long\n"), Prog);
+				exit (E_NOPERM);
+			}
 			STRFCPY (slop, optarg);
 			break;
 		case 'r':
@@ -378,8 +380,7 @@ static void check_perms (const struct passwd *pw)
 	 * check if the change is allowed by SELinux policy.
 	 */
 	if ((pw->pw_uid != getuid ())
-	    && (is_selinux_enabled () > 0)
-	    && (selinux_check_passwd_access (PASSWD__CHFN) != 0)) {
+	    && (check_selinux_permit ("chfn") != 0)) {
 		fprintf (stderr, _("%s: Permission denied.\n"), Prog);
 		closelog ();
 		exit (E_NOPERM);
@@ -746,6 +747,7 @@ int main (int argc, char **argv)
 	SYSLOG ((LOG_INFO, "changed user '%s' information", user));
 
 	nscd_flush_cache ("passwd");
+	sssd_flush_cache (SSSD_DB_PASSWD);
 
 	closelog ();
 	exit (E_SUCCESS);

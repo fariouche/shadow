@@ -40,6 +40,9 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <errno.h>
+#ifdef USE_ECONF
+#include <libeconf.h>
+#endif
 #include "getdef.h"
 /*
  * A configuration item definition.
@@ -74,6 +77,16 @@ struct itemdef {
 	{"SU_WHEEL_ONLY", NULL},		\
 	{"ULIMIT", NULL},
 
+/*
+ * Items used in other tools (util-linux, etc.)
+ */
+#define FOREIGNDEFS				\
+	{"ALWAYS_SET_PATH", NULL},		\
+	{"ENV_ROOTPATH", NULL},			\
+	{"LOGIN_KEEP_USERNAME", NULL},		\
+	{"LOGIN_PLAIN_PROMPT", NULL},		\
+	{"MOTD_FIRSTONLY", NULL},		\
+
 
 #define NUMDEFS	(sizeof(def_table)/sizeof(def_table[0]))
 static struct itemdef def_table[] = {
@@ -90,8 +103,10 @@ static struct itemdef def_table[] = {
 	{"FAKE_SHELL", NULL},
 	{"GID_MAX", NULL},
 	{"GID_MIN", NULL},
+	{"HOME_MODE", NULL},
 	{"HUSHLOGIN_FILE", NULL},
 	{"KILLCHAR", NULL},
+	{"LASTLOG_UID_MAX", NULL},
 	{"LOGIN_RETRIES", NULL},
 	{"LOGIN_TIMEOUT", NULL},
 	{"LOG_OK_LOGINS", NULL},
@@ -100,12 +115,17 @@ static struct itemdef def_table[] = {
 	{"MAIL_FILE", NULL},
 	{"MAX_MEMBERS_PER_GROUP", NULL},
 	{"MD5_CRYPT_ENAB", NULL},
+	{"NONEXISTENT", NULL},
 	{"PASS_MAX_DAYS", NULL},
 	{"PASS_MIN_DAYS", NULL},
 	{"PASS_WARN_AGE", NULL},
 #ifdef USE_SHA_CRYPT
 	{"SHA_CRYPT_MAX_ROUNDS", NULL},
 	{"SHA_CRYPT_MIN_ROUNDS", NULL},
+#endif
+#ifdef USE_BCRYPT
+	{"BCRYPT_MAX_ROUNDS", NULL},
+	{"BCRYPT_MIN_ROUNDS", NULL},
 #endif
 	{"SUB_GID_COUNT", NULL},
 	{"SUB_GID_MAX", NULL},
@@ -148,14 +168,24 @@ static struct itemdef knowndef_table[] = {
 #ifdef USE_PAM
 	PAMDEFS
 #endif
+	FOREIGNDEFS
 	{NULL, NULL}
 };
 
+#ifdef USE_ECONF
+#ifdef VENDORDIR
+static const char* vendordir = VENDORDIR;
+#else
+static const char* vendordir = NULL;
+#endif
+static const char* sysconfdir = "/etc";
+#else
 #ifndef LOGINDEFS
 #define LOGINDEFS "/etc/login.defs"
 #endif
 
 static const char* def_fname = LOGINDEFS;	/* login config defs file       */
+#endif
 static bool def_loaded = false;		/* are defs already loaded?     */
 
 /* local function prototypes */
@@ -395,7 +425,6 @@ static /*@observer@*/ /*@null@*/struct itemdef *def_find (const char *name)
 {
 	struct itemdef *ptr;
 
-
 	/*
 	 * Search into the table.
 	 */
@@ -432,7 +461,27 @@ out:
 
 void setdef_config_file (const char* file)
 {
+#ifdef USE_ECONF
+	size_t len;
+	char* cp;
+
+	len = strlen(file) + strlen(sysconfdir) + 2;
+	cp = malloc(len);
+	if (cp == NULL)
+		exit (13);
+	snprintf(cp, len, "%s/%s", file, sysconfdir);
+	sysconfdir = cp;
+#ifdef VENDORDIR
+	len = strlen(file) + strlen(vendordir) + 2;
+	cp = malloc(len);
+	if (cp == NULL)
+		exit (13);
+	snprintf(cp, len, "%s/%s", file, vendordir);
+	vendordir = cp;
+#endif
+#else
 	def_fname = file;
+#endif
 }
 
 /*
@@ -443,9 +492,16 @@ void setdef_config_file (const char* file)
 
 static void def_load (void)
 {
+#ifdef USE_ECONF
+	econf_file *defs_file = NULL;
+	econf_err error;
+	char **keys;
+	size_t key_number;
+#else
 	int i;
 	FILE *fp;
 	char buf[1024], *name, *value, *s;
+#endif
 
 	/*
 	 * Set the initialized flag.
@@ -453,6 +509,42 @@ static void def_load (void)
 	 */
 	def_loaded = true;
 
+#ifdef USE_ECONF
+
+	error = econf_readDirs (&defs_file, vendordir, sysconfdir, "login", "defs", " \t", "#");
+	if (error) {
+		if (error == ECONF_NOFILE)
+			return;
+
+		SYSLOG ((LOG_CRIT, "cannot open login definitions [%s]",
+			econf_errString(error)));
+		exit (EXIT_FAILURE);
+	}
+
+	if ((error = econf_getKeys(defs_file, NULL, &key_number, &keys))) {
+		SYSLOG ((LOG_CRIT, "cannot read login definitions [%s]",
+			econf_errString(error)));
+		exit (EXIT_FAILURE);
+	}
+
+	for (size_t i = 0; i < key_number; i++) {
+		char *value;
+
+		econf_getStringValue(defs_file, NULL, keys[i], &value);
+
+		/*
+		 * Store the value in def_table.
+		 *
+		 * Ignore failures to load the login.defs file.
+		 * The error was already reported to the user and to
+		 * syslog. The tools will just use their default values.
+		 */
+		(void)putdef_str (keys[i], value);
+	}
+
+	econf_free (keys);
+	econf_free (defs_file);
+#else
 	/*
 	 * Open the configuration definitions file.
 	 */
@@ -516,6 +608,7 @@ static void def_load (void)
 	}
 
 	(void) fclose (fp);
+#endif
 }
 
 
